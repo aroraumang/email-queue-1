@@ -74,7 +74,8 @@ class EmailQueue(ModelSQL, ModelView):
             try:
                 self.write([self], {'state': 'sending'})
                 smtp_server.sendmail(
-                    self.from_addr, self.to_addrs.split(','), self.msg
+                    self.from_addr, self.to_addrs.replace(';', ',').split(','),
+                    self.msg
                 )
             except Exception:
                 txn.rollback()
