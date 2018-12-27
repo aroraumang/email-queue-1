@@ -5,7 +5,7 @@
 """
 from trytond.pool import Pool
 
-from email_queue import EmailQueue
+from .email_queue import EmailQueue
 
 
 def register():

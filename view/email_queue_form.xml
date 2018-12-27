@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<form string="Email Queue" col="4">
+<form col="4">
     <label name="from_addr"/>
     <field name="from_addr"/>
     <label name="to_addrs"/>

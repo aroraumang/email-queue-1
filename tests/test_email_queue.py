@@ -6,7 +6,7 @@
 import time
 import unittest
 import threading
-import Queue
+from queue import Queue
 from functools import wraps
 
 from mock import patch
@@ -14,8 +14,9 @@ from pretend import stub
 from faker import Faker
 
 from trytond.tests.test_tryton import (
-    POOL, USER, DB_NAME, CONTEXT, ModuleTestCase
+    with_transaction, ModuleTestCase, DB_NAME, USER, CONTEXT
 )
+from trytond.pool import Pool
 from trytond.transaction import Transaction
 from trytond.cache import Cache
 from trytond import backend
@@ -25,10 +26,10 @@ import trytond.tests.test_tryton
 def clear_email_queue(function):
     @wraps(function)
     def wrapper(*args, **kwargs):
-        EmailQueue = POOL.get('email.queue')
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        EmailQueue = Pool().get('email.queue')
+        with Transaction().new_transaction(readonly=False) as transaction:
             EmailQueue.delete(EmailQueue.search([]))
-            transaction.commit()
+            transaction.connection.commit()
         return function(*args, **kwargs)
     return wrapper
 
@@ -45,66 +46,66 @@ class TestEmailQueue(ModuleTestCase):
     module = 'email_queue'
 
     @patch("smtplib.SMTP")
+    @with_transaction()
     def test_0010_send_mails(self, mock_smtp):
         """
         Tests send_mails functionality.
         """
-        EmailQueue = POOL.get('email.queue')
+        EmailQueue = Pool().get('email.queue')
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
-            # Put some emails in queue
-            f = Faker()
-            for item in xrange(10):
-                EmailQueue.queue_mail(f.email(), f.email(), f.text())
+        # Put some emails in queue
+        f = Faker()
+        for item in range(10):
+            EmailQueue.queue_mail(f.email(), f.email(), f.text())
 
-            transaction.commit()
+        Transaction().connection.commit()
 
-            self.assertEqual(EmailQueue.search([], count=True), 10)
-            self.assertEqual(
-                EmailQueue.search([('state', '=', 'outbox')], count=True), 10
-            )
+        self.assertEqual(EmailQueue.search([], count=True), 10)
+        self.assertEqual(
+            EmailQueue.search([('state', '=', 'outbox')], count=True), 10
+        )
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             # Run cron method to send mails
             EmailQueue.send_all()
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             self.assertEqual(
                 EmailQueue.search([('state', '=', 'sent')], count=True), 10
             )
 
     @patch("smtplib.SMTP")
+    @with_transaction()
     @clear_email_queue
     def test_0015_max_attempts(self, mock_smtp):
         """
         After five attempts email state changes to failed.
         """
-        EmailQueue = POOL.get('email.queue')
+        EmailQueue = Pool().get('email.queue')
 
         # Mock sendmail to raise exception
         mock_smtp.return_value.sendmail.side_effect = BadSMTPServerException()
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
-            # Put some emails in queue
-            f = Faker()
-            for item in xrange(10):
-                EmailQueue.queue_mail(f.email(), f.email(), f.text())
+        # Put some emails in queue
+        f = Faker()
+        for item in range(10):
+            EmailQueue.queue_mail(f.email(), f.email(), f.text())
 
-            transaction.commit()
+        Transaction().connection.commit()
 
-            self.assertEqual(
-                EmailQueue.search([('state', '=', 'outbox')], count=True), 10
-            )
+        self.assertEqual(
+            EmailQueue.search([('state', '=', 'outbox')], count=True), 10
+        )
 
         # Try sending the emails. The first 3 attempts will result in
         # failures and the email should then be in failed state.
-        for i in xrange(3):
-            with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        for i in range(3):
+            with Transaction().new_transaction(readonly=False):
                 # Run cron method to send mails
                 with self.assertRaises(BadSMTPServerException):
                     EmailQueue.send_all()
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             self.assertEqual(
                 EmailQueue.search([('state', '=', 'failed')], count=True), 1
             )
@@ -116,10 +117,10 @@ class TestEmailQueue(ModuleTestCase):
         # should be sent well while the failed one remains failed
         mock_smtp.return_value.sendmail.side_effect = None
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             EmailQueue.send_all()
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             self.assertEqual(
                 EmailQueue.search([('state', '=', 'failed')], count=True), 1
             )
@@ -133,6 +134,7 @@ class TestEmailQueue(ModuleTestCase):
     @unittest.skipIf(
         backend.name() == 'sqlite', "Skip txn safety test on SQlite"
     )
+    @with_transaction()
     @clear_email_queue
     def test_9999_transaction_safety(self):
         """
@@ -142,18 +144,17 @@ class TestEmailQueue(ModuleTestCase):
         * This should be the last test since this breaks the rule to commit
           within the test creating records
         """
-        EmailQueue = POOL.get('email.queue')
+        EmailQueue = Pool().get('email.queue')
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
-            # Put some emails in queue
-            f = Faker()
-            for item in xrange(10):
-                EmailQueue.queue_mail(f.email(), f.email(), f.text())
+        # Put some emails in queue
+        f = Faker()
+        for item in range(10):
+            EmailQueue.queue_mail(f.email(), f.email(), f.text())
 
-            transaction.commit()
+        Transaction().connection.commit()
 
         # A queue is used to handle the ones which errored.
-        searialization_error_q = Queue.Queue(3)
+        searialization_error_q = Queue(3)
 
         # A fake smtp server which just sleeps for 5 seconds when sendmail
         # is called.
@@ -184,7 +185,7 @@ class TestEmailQueue(ModuleTestCase):
                 finally:
                     Cache.drop(DB_NAME)
 
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             email1, email2 = EmailQueue.search(
                 [('state', '=', 'outbox')], limit=2
             )
@@ -224,12 +225,12 @@ class TestEmailQueue(ModuleTestCase):
         self.assertEqual(searialization_error_q.get(), email1.id)
 
         # 2: Assert that both email 1 and 2 have the sent state
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             self.assertEqual(EmailQueue(email1.id).state, 'sent')
             self.assertEqual(EmailQueue(email2.id).state, 'sent')
 
         # 3: Assert that there are 8 emails left in outbox
-        with Transaction().start(DB_NAME, USER, CONTEXT) as transaction:
+        with Transaction().new_transaction(readonly=False):
             self.assertEqual(
                 EmailQueue.search([('state', '=', 'outbox')], count=True), 8
             )
@@ -244,6 +245,7 @@ def suite():
         unittest.TestLoader().loadTestsFromTestCase(TestEmailQueue)
     )
     return test_suite
+
 
 if __name__ == '__main__':
     unittest.TextTestRunner(verbosity=2).run(suite())

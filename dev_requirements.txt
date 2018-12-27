@@ -1,7 +1,7 @@
 flake8
 psycopg2
 mock
-fake-factory
+Faker
 pretend
 coveralls
 .
